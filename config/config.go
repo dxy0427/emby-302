@@ -13,7 +13,8 @@ type Config struct {
 	Server struct {
 		Port string `yaml:"port"`
 	} `yaml:"server"`
-	Emby Emby `yaml:"emby"`
+	Emby         Emby          `yaml:"emby"`
+	ClientFilter *ClientFilter `yaml:"ClientFilter"`
 }
 
 type Emby struct {
@@ -26,6 +27,13 @@ type Emby struct {
 type Strm struct {
 	PathMap []string `yaml:"path-map"`
 	pathMap [][2]string
+}
+
+type ClientFilter struct {
+	Enable     bool     `yaml:"Enable"`
+	Mode       string   `yaml:"Mode"`
+	ClientList []string `yaml:"ClientList"`
+	clientSet  map[string]struct{}
 }
 
 func (e *Emby) Init() error {
@@ -66,23 +74,69 @@ func (s *Strm) MapPath(path string) string {
 	return path
 }
 
+func (cf *ClientFilter) Init() error {
+	if !cf.Enable {
+		return nil
+	}
+	cf.Mode = strings.ToLower(strings.TrimSpace(cf.Mode))
+	if cf.Mode == "" {
+		cf.Mode = "blacklist"
+	}
+	if cf.Mode != "blacklist" && cf.Mode != "whitelist" {
+		return fmt.Errorf("ClientFilter.Mode 必须是 'BlackList' 或 'WhiteList'")
+	}
+	cf.clientSet = make(map[string]struct{})
+	for _, client := range cf.ClientList {
+		if c := strings.TrimSpace(client); c != "" {
+			lowerClient := strings.ToLower(c)
+			cf.clientSet[lowerClient] = struct{}{}
+			log.Printf("[INFO] 加载客户端防火墙名单 (%s): %s", cf.Mode, c)
+		}
+	}
+	return nil
+}
+
+func (cf *ClientFilter) ShouldBlockRequest(userAgent string) bool {
+	if !cf.Enable {
+		return false
+	}
+	lowerUserAgent := strings.ToLower(userAgent)
+	var matchFound bool
+	for client := range cf.clientSet {
+		if strings.Contains(lowerUserAgent, client) {
+			matchFound = true
+			break
+		}
+	}
+	if cf.Mode == "blacklist" {
+		return matchFound
+	}
+	if cf.Mode == "whitelist" {
+		return !matchFound
+	}
+	return false
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置文件失败 %s: %w", path, err)
 	}
-
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
-
 	if strings.TrimSpace(cfg.Server.Port) == "" {
 		return nil, fmt.Errorf("server.port 不能为空")
 	}
 	if err := cfg.Emby.Init(); err != nil {
 		return nil, fmt.Errorf("Emby 配置初始化失败: %w", err)
 	}
-
+	if cfg.ClientFilter == nil {
+		cfg.ClientFilter = &ClientFilter{Enable: false}
+	}
+	if err := cfg.ClientFilter.Init(); err != nil {
+		return nil, fmt.Errorf("ClientFilter 配置初始化失败: %w", err)
+	}
 	return &cfg, nil
 }
