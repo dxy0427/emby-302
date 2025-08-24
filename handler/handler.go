@@ -62,33 +62,27 @@ func (app *AppState) getEmbyMediaPath(ctx context.Context, itemID, mediaSourceID
 	if apiKey == "" {
 		return "", fmt.Errorf("API Key 为空，无法请求 Emby")
 	}
-
 	apiURL := fmt.Sprintf("%s/emby/Items/%s/PlaybackInfo?MediaSourceId=%s&api_key=%s",
 		strings.TrimSuffix(app.Config.Emby.Host, "/"), itemID, mediaSourceID, apiKey)
-
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %w", err)
 	}
-
 	resp, err := app.Client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("请求 Emby API 失败: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode == http.StatusUnauthorized {
 		return "", fmt.Errorf("Emby API 鉴权失败 (401 Unauthorized)，请检查 API Key 是否有效")
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("Emby API 返回非 200 状态码: %d", resp.StatusCode)
 	}
-
 	var playbackInfo PlaybackInfoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&playbackInfo); err != nil {
 		return "", fmt.Errorf("解析 Emby API 响应失败: %w", err)
 	}
-
 	if len(playbackInfo.MediaSources) == 0 {
 		return "", fmt.Errorf("未找到媒体源 (MediaSources)")
 	}
@@ -96,6 +90,13 @@ func (app *AppState) getEmbyMediaPath(ctx context.Context, itemID, mediaSourceID
 }
 
 func (app *AppState) RootHandler(w http.ResponseWriter, r *http.Request) {
+	userAgent := r.Header.Get("User-Agent")
+	if app.Config.ClientFilter.ShouldBlockRequest(userAgent) {
+		log.Printf("[INFO] 客户端 User-Agent: '%s'。根据防火墙规则，已禁止其访问。", userAgent)
+		http.Error(w, "此客户端已被禁止访问", http.StatusForbidden)
+		return
+	}
+
 	if app.Config.Emby.DownloadStrategy == "403" && (strings.Contains(r.URL.Path, "/Items/") && strings.Contains(r.URL.Path, "/Download")) {
 		log.Printf("[INFO] 已拦截下载请求: %s", r.URL.Path)
 		http.Error(w, "下载已被策略禁止", http.StatusForbidden)
@@ -113,7 +114,6 @@ func (app *AppState) RootHandler(w http.ResponseWriter, r *http.Request) {
 		if mediaSourceID != "" {
 			pathParts := strings.Split(r.URL.Path, "/")
 			itemID := pathParts[len(pathParts)-2]
-
 			apiKey := extractAPIKey(r, app.Config.Emby.APIKey)
 
 			mediaPath, err := app.getEmbyMediaPath(r.Context(), itemID, mediaSourceID, apiKey)
